@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: sentinel-backend
+    environment:
+      - EMAIL_PROVIDER=gmail
+      # - GMAIL_CLIENT_SECRETS=/run/secrets/gmail_client_secrets.json
+      # - GMAIL_TOKEN_FILE=/data/gmail_token.json
+      # or SMTP_*
+      # - SMTP_HOST=smtp.example.com
+      # - SMTP_USER=...
+      # - SMTP_PASSWORD=...
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend-data:/app
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    container_name: sentinel-web
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  backend-data:
+

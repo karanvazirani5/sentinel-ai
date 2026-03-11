@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+# Python virtualenvs
+venv/
+api/venv/
+backend/venv/
+
+# SQLite DB
+sentinel.db
+backend/sentinel.db
+
+# Node modules
+web/node_modules/
+
+# Build artifacts
+web/.next/
+
+api/.env
