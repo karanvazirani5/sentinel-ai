@@ -870,7 +870,7 @@ def get_activity(db: Session = Depends(get_db)):
     return db.query(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(100).all()
 
 
-@app.get("/stats", response_model=StatsOut)
+@app.get("/stats")
 def get_stats(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -888,13 +888,13 @@ def get_stats(
         drafts_approved = 0
         drafts_sent = 0
 
-    return StatsOut(
-        total_leads=total_leads,
-        new_leads=new_leads,
-        drafts_pending=drafts_pending,
-        drafts_approved=drafts_approved,
-        drafts_sent=drafts_sent,
-    )
+    return {
+        "total_leads": total_leads,
+        "new_leads": new_leads,
+        "drafts_pending": drafts_pending,
+        "drafts_approved": drafts_approved,
+        "drafts_sent": drafts_sent,
+    }
 
 
 @app.post("/import_real_leads", response_model=List[LeadOut])
