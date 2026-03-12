@@ -23,7 +23,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 ALLOW_REGISTRATION = os.getenv("ALLOW_REGISTRATION", "false").lower() in {"1", "true", "yes"}
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
