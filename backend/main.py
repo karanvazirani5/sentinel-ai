@@ -12,6 +12,19 @@ from pydantic import BaseModel
 from sqlalchemy import create_engine, Column, String, Text, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from sqlalchemy import text
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from fastapi.security import OAuth2PasswordBearer
+from datetime import timedelta
+
+SECRET_KEY = os.getenv("AUTH_SECRET_KEY", "change-me-in-prod")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+ALLOW_REGISTRATION = os.getenv("ALLOW_REGISTRATION", "false").lower() in {"1", "true", "yes"}
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE_URL = f"sqlite:///{os.path.join(BASE_DIR, 'sentinel.db')}"
@@ -141,6 +154,13 @@ class OpsTask(Base):
     status = Column(String, default="open")  # open, in_progress, done
     created_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(String, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 Base.metadata.create_all(bind=engine)
@@ -361,6 +381,19 @@ class OpsTaskOut(BaseModel):
     class Config:
         from_attributes = True
 
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+class UserCreate(BaseModel):
+    email: str
+    password: str
+class UserOut(BaseModel):
+    id: str
+    email: str
+    created_at: datetime
+    class Config:
+        from_attributes = True
+
 
 # -------------------------
 # Helpers
@@ -375,6 +408,45 @@ def log_activity(db: Session, message: str):
     db.add(entry)
     db.commit()
 
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return pwd_context.verify(plain, hashed)
+
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def get_user_by_email(db: Session, email: str) -> Optional[User]:
+    return db.query(User).filter(User.email == email).first()
+
+
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> User:
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    user = get_user_by_email(db, email=email)
+    if user is None:
+        raise credentials_exception
+    return user
 
 def ensure_agent(
     db: Session,
@@ -758,6 +830,35 @@ def update_draft(draft_id: str, payload: DraftUpdateIn, db: Session = Depends(ge
     log_activity(db, f"Edited draft for {draft.company}")
     return draft
 
+@app.get("/leads", response_model=List[LeadOut])
+def get_leads(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return db.query(Lead).order_by(Lead.created_at.desc()).all()
+
+@app.get("/drafts", response_model=List[DraftOut])
+def get_drafts(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return db.query(Draft).order_by(Draft.created_at.desc()).all()
+
+
+@app.get("/activity", response_model=List[ActivityOut])
+def get_activity(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return db.query(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(100).all()
+
+
+@app.get("/stats", response_model=StatsOut)
+def get_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ...
 
 @app.get("/activity", response_model=List[ActivityOut])
 def get_activity(db: Session = Depends(get_db)):
@@ -1209,6 +1310,147 @@ def approve_draft(draft_id: str, db: Session = Depends(get_db)):
     )
     return draft
 
+@app.get("/agents", response_model=List[AgentOut])
+def get_agents(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ...
+
+
+@app.get("/agent_stats", response_model=List[AgentStatsOut])
+def get_agent_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ...
+
+
+@app.get("/governance_events", response_model=List[GovernanceEventOut])
+def get_governance_events(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ...
+
+
+@app.get("/roi_summary", response_model=RoiSummaryOut)
+def get_roi_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ...
+
+@app.post("/ops/seed_tasks", response_model=List[OpsTaskOut])
+def seed_ops_tasks(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ...
+
+
+@app.get("/ops/tasks", response_model=List[OpsTaskOut])
+def list_ops_tasks(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ...
+
+
+@app.post("/ops/complete_task/{task_id}", response_model=OpsTaskOut)
+def complete_ops_task(
+    task_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ...
+
+@app.post("/auth/register", response_model=UserOut)
+def register(user_in: UserCreate, db: Session = Depends(get_db)):
+    if not ALLOW_REGISTRATION:
+        raise HTTPException(status_code=403, detail="Registration disabled")
+
+    existing = get_user_by_email(db, user_in.email)
+    if existing:
+        raise HTTPException(status_code=400, detail="User already exists")
+
+    user = User(
+        id=str(uuid.uuid4()),
+        email=user_in.email,
+        password_hash=hash_password(user_in.password),
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+@app.post("/import_real_leads", response_model=List[LeadOut])
+def import_real_leads(
+    payload: ImportPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ...
+
+
+@app.post("/qualify_leads", response_model=List[LeadOut])
+def qualify_leads(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ...
+
+
+@app.post("/research_lead/{lead_id}", response_model=LeadOut)
+def research_lead(
+    lead_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ...
+
+
+@app.post("/generate_researched_draft/{lead_id}", response_model=DraftOut)
+def generate_researched_draft(
+    lead_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ...
+
+@app.post("/auth/login", response_model=Token)
+def login(user_in: UserCreate, db: Session = Depends(get_db)):
+    user = get_user_by_email(db, user_in.email)
+    if not user or not verify_password(user_in.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+
+    access_token = create_access_token(data={"sub": user.email})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.post("/support/seed_tickets", response_model=List[TicketOut])
+def seed_tickets(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ...
+
+
+@app.get("/support/tickets", response_model=List[TicketOut])
+def list_tickets(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ...
+
+
+@app.post("/support/resolve_ticket/{ticket_id}", response_model=TicketOut)
+def resolve_ticket(
+    ticket_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    ...
 
 @app.post("/send_draft/{draft_id}", response_model=DraftOut)
 def send_draft(draft_id: str, db: Session = Depends(get_db)):

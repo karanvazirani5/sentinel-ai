@@ -3,8 +3,8 @@ version: "3.9"
 services:
   backend:
     build:
-      context: .
-      dockerfile: backend/Dockerfile
+      context: ./backend
+      dockerfile: Dockerfile
     container_name: sentinel-backend
     environment:
       - EMAIL_PROVIDER=gmail
@@ -21,8 +21,8 @@ services:
 
   web:
     build:
-      context: .
-      dockerfile: web/Dockerfile
+      context: ./web
+      dockerfile: Dockerfile
     container_name: sentinel-web
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000

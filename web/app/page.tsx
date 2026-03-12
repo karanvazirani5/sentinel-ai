@@ -1,9 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+import { apiFetch } from "../lib/api";
 
 type Lead = {
   id: string;
@@ -208,14 +206,14 @@ export default function SentinelPage() {
         govRes,
         roiRes,
       ] = await Promise.all([
-        fetch(`${API_BASE}/leads`),
-        fetch(`${API_BASE}/drafts`),
-        fetch(`${API_BASE}/activity`),
-        fetch(`${API_BASE}/stats`),
-        fetch(`${API_BASE}/agents`),
-        fetch(`${API_BASE}/agent_stats`),
-        fetch(`${API_BASE}/governance_events`),
-        fetch(`${API_BASE}/roi_summary`),
+        apiFetch("/leads"),
+        apiFetch("/drafts"),
+        apiFetch("/activity"),
+        apiFetch("/stats"),
+        apiFetch("/agents"),
+        apiFetch("/agent_stats"),
+        apiFetch("/governance_events"),
+        apiFetch("/roi_summary"),
       ]);
 
       const [
@@ -262,9 +260,8 @@ export default function SentinelPage() {
     setLoading(true);
     try {
       // For now, seed with sample leads via the real import endpoint.
-      const res = await fetch(`${API_BASE}/import_real_leads`, {
+      const res = await apiFetch("/import_real_leads", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           leads: [
             {
@@ -315,9 +312,8 @@ export default function SentinelPage() {
   async function handleQualifyLeads() {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/qualify_leads`, {
+      const res = await apiFetch("/qualify_leads", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
       const data = await res.json();
@@ -430,9 +426,8 @@ export default function SentinelPage() {
         return;
       }
 
-      const res = await fetch(`${API_BASE}/import_real_leads`, {
+      const res = await apiFetch("/import_real_leads", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           leads: parsed.map(
             ({
@@ -483,7 +478,7 @@ export default function SentinelPage() {
   async function handleCreateDraft(leadId: string) {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/create_draft/${leadId}`, {
+      const res = await apiFetch(`/create_draft/${leadId}`, {
         method: "POST",
       });
 
@@ -508,7 +503,7 @@ export default function SentinelPage() {
   async function handleApproveDraft(draftId: string) {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/approve_draft/${draftId}`, {
+      const res = await apiFetch(`/approve_draft/${draftId}`, {
         method: "POST",
       });
 
@@ -540,9 +535,8 @@ export default function SentinelPage() {
     if (!editingDraftId) return;
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/drafts/${editingDraftId}`, {
+      const res = await apiFetch(`/drafts/${editingDraftId}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ subject: draftSubject, body: draftBody }),
       });
       const data = await res.json();
@@ -564,7 +558,7 @@ export default function SentinelPage() {
   async function handleSendDraft(draftId: string) {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/send_draft/${draftId}`, {
+      const res = await apiFetch(`/send_draft/${draftId}`, {
         method: "POST",
       });
 
@@ -588,7 +582,7 @@ export default function SentinelPage() {
   async function handleResearchLead(leadId: string) {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/research_lead/${leadId}`, {
+      const res = await apiFetch(`/research_lead/${leadId}`, {
         method: "POST",
       });
       const data = await res.json();
@@ -609,12 +603,9 @@ export default function SentinelPage() {
   async function handleGenerateResearchedDraft(leadId: string) {
     setLoading(true);
     try {
-      const res = await fetch(
-        `${API_BASE}/generate_researched_draft/${leadId}`,
-        {
-          method: "POST",
-        }
-      );
+      const res = await apiFetch(`/generate_researched_draft/${leadId}`, {
+        method: "POST",
+      });
       const data = await res.json();
       if (!res.ok) {
         setHelperOutput(data.detail || "Failed to generate researched draft.");
