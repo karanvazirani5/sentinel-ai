@@ -47,16 +47,16 @@ export default function LoginPage() {
       >
         <h1 className="text-xl font-black text-slate-900">Sign in</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Enter your email and password to open your workspace.
+          Enter your username and password to open your workspace.
         </p>
 
         <div className="mt-4 space-y-3">
           <div>
             <label className="block text-xs font-semibold text-slate-600">
-              Email
+              Username
             </label>
             <input
-              type="email"
+              type="text"
               className="mt-1 w-full rounded-2xl border border-slate-200 px-3 py-2 text-sm"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
