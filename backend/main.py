@@ -871,12 +871,22 @@ def get_activity(db: Session = Depends(get_db)):
 
 
 @app.get("/stats", response_model=StatsOut)
-def get_stats(db: Session = Depends(get_db)):
-    total_leads = db.query(Lead).count()
-    new_leads = db.query(Lead).filter(Lead.status == "new").count()
-    drafts_pending = db.query(Draft).filter(Draft.status == "pending").count()
-    drafts_approved = db.query(Draft).filter(Draft.status == "approved").count()
-    drafts_sent = db.query(Draft).filter(Draft.status == "sent").count()
+def get_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        total_leads = db.query(Lead).count()
+        new_leads = db.query(Lead).filter(Lead.status == "new").count()
+        drafts_pending = db.query(Draft).filter(Draft.status == "pending").count()
+        drafts_approved = db.query(Draft).filter(Draft.status == "approved").count()
+        drafts_sent = db.query(Draft).filter(Draft.status == "sent").count()
+    except Exception:
+        total_leads = 0
+        new_leads = 0
+        drafts_pending = 0
+        drafts_approved = 0
+        drafts_sent = 0
 
     return StatsOut(
         total_leads=total_leads,
