@@ -1,9 +1,8 @@
- "use client";
-
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import React, { useEffect, useState } from "react";
+import React from "react";
+import { ClientAuthGuard } from "./ClientAuthGuard";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -20,25 +19,6 @@ export const metadata: Metadata = {
   description: "AI agents for your business",
 };
 
-function AuthGuard({ children }: { children: React.ReactNode }) {
-  const [ready, setReady] = useState(false);
-
-  useEffect(() => {
-    const token = typeof window !== "undefined"
-      ? localStorage.getItem("sentinel_token")
-      : null;
-
-    if (!token && typeof window !== "undefined" && window.location.pathname !== "/login") {
-      window.location.href = "/login";
-    } else {
-      setReady(true);
-    }
-  }, []);
-
-  if (!ready) return null;
-  return <>{children}</>;
-}
-
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -49,7 +29,7 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        <AuthGuard>{children}</AuthGuard>
+        <ClientAuthGuard>{children}</ClientAuthGuard>
       </body>
     </html>
   );
