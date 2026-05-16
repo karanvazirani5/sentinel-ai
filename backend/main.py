@@ -1312,6 +1312,7 @@ def generate_researched_draft(lead_id: str, db: Session = Depends(get_db)):
             {"role": "user", "content": user_prompt},
         ],
         max_tokens=600,
+        response_format={"type": "json_object"},
     )
 
     subject, body = _parse_subject_body(

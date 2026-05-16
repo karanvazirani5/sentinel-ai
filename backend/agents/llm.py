@@ -109,29 +109,46 @@ def _demo_fallback(messages: list[dict], started: float, *, error: str) -> dict:
 
 
 def _heuristic_text(user_text: str) -> str:
-    """Cheap canned output that at least mentions the company/contact if present."""
+    """Cheap canned output that at least mentions the company/contact if present.
+
+    The shape of the fallback depends on what the caller asked for:
+    - {subject, body} JSON for draft generation
+    - {company_summary, pain_points, personalization_note, cited_fact}
+      JSON for research synthesis
+    - plain email text otherwise
+    """
     lower = user_text.lower()
-    if "json" in lower or "{" in user_text:
-        return json.dumps(
-            {
-                "company_summary": (
-                    "Small business operating in their local market, likely "
-                    "leaning on a small team to keep operations moving."
-                ),
-                "pain_points": (
-                    "manual outreach and follow-up; limited team capacity; "
-                    "scattered customer communications"
-                ),
-                "personalization_note": (
-                    "Reference the team's small size and the volume of repetitive "
-                    "manual work they likely handle every week."
-                ),
-                "cited_fact": None,
-            }
-        )
-    company = _extract_field(user_text, "Company:")
+    company = _extract_field(user_text, "Company:") or "your team"
     contact = _extract_field(user_text, "Contact:") or "there"
-    return _FALLBACK_DRAFT.format(company=company or "your team", contact_name=contact)
+    plain_body = _FALLBACK_DRAFT.format(company=company, contact_name=contact)
+
+    # Draft-shape fallback (subject + body)
+    if "subject" in lower and ("body" in lower or "email body" in lower):
+        return json.dumps({
+            "subject": f"Quick idea for {company}",
+            "body": plain_body,
+        })
+
+    # Research-shape fallback
+    if "company_summary" in lower or "cited_fact" in lower:
+        return json.dumps({
+            "company_summary": (
+                f"{company} is a small business serving a tight regional "
+                "customer base with a small operations team."
+            ),
+            "pain_points": (
+                "manual outreach and follow-up; limited team capacity; "
+                "scattered customer communications"
+            ),
+            "personalization_note": (
+                f"Reference {company}'s lean team and the load of repetitive "
+                "sales follow-up."
+            ),
+            "cited_fact": None,
+        })
+
+    # Default: a plain email body
+    return plain_body
 
 
 def _extract_field(user_text: str, label: str) -> Optional[str]:
