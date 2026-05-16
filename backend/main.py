@@ -1668,21 +1668,30 @@ def send_draft(draft_id: str, db: Session = Depends(get_db)):
     draft.delivery_error = None
     db.commit()
 
-    try:
-        message_id = send_email(
-            to_email=draft.email,
-            subject=draft.subject,
-            body=draft.body,
-        )
-    except Exception as e:
-        draft.delivery_status = "failed"
-        draft.delivery_error = str(e)
-        db.commit()
-        log_activity(db, f"Failed sending draft to {draft.email}: {draft.delivery_error}")
-        raise HTTPException(
-            status_code=502,
-            detail=f"Email delivery failed: {draft.delivery_error}",
-        )
+    demo_mode = os.getenv("DEMO_MODE", "false").lower() in {"1", "true", "yes"}
+    smtp_configured = bool(os.getenv("SMTP_HOST") or os.getenv("GMAIL_CLIENT_SECRETS"))
+
+    if demo_mode and not smtp_configured:
+        # Stage-demo path: skip the real SMTP/Gmail call and mark sent. The
+        # audience sees the same UI transition; no live email is required.
+        message_id = f"demo-{uuid.uuid4().hex[:12]}"
+        log_activity(db, f"[DEMO] Simulated send for {draft.email} (no SMTP configured)")
+    else:
+        try:
+            message_id = send_email(
+                to_email=draft.email,
+                subject=draft.subject,
+                body=draft.body,
+            )
+        except Exception as e:
+            draft.delivery_status = "failed"
+            draft.delivery_error = str(e)
+            db.commit()
+            log_activity(db, f"Failed sending draft to {draft.email}: {draft.delivery_error}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Email delivery failed: {draft.delivery_error}",
+            )
 
     draft.status = "sent"
     draft.delivery_status = "sent"
