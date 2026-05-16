@@ -710,7 +710,13 @@ def send_email_gmail_api(*, to_email: str, subject: str, body: str) -> str:
 
 
 def send_email_resend(*, to_email: str, subject: str, body: str) -> str:
-    """Send via Resend HTTPS API. Returns Resend message id."""
+    """Send via Resend HTTPS API. Returns Resend message id.
+
+    Renders the plain-text body as proper HTML (paragraph breaks, line
+    breaks) so the email looks normal in Gmail / Outlook / etc. Also
+    keeps the text version for client preview.
+    """
+    import html as html_lib
     import httpx
 
     api_key = os.getenv("RESEND_API_KEY", "").strip()
@@ -719,11 +725,28 @@ def send_email_resend(*, to_email: str, subject: str, body: str) -> str:
     from_addr = os.getenv("RESEND_FROM", "Sentinel AI <onboarding@resend.dev>")
     reply_to = os.getenv("RESEND_REPLY_TO", "").strip() or None
 
+    # Build an HTML version. Split on blank lines into paragraphs; convert
+    # remaining single newlines into <br>.
+    normalized = (body or "").replace("\r\n", "\n").strip()
+    paragraphs = [p.strip() for p in normalized.split("\n\n") if p.strip()]
+    paragraph_html = "".join(
+        f'<p style="margin:0 0 14px 0;">{html_lib.escape(p).replace(chr(10), "<br>")}</p>'
+        for p in paragraphs
+    )
+    html_body = (
+        '<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,'
+        'Helvetica,Arial,sans-serif;color:#111;line-height:1.55;'
+        'font-size:15px;max-width:640px;">'
+        f'{paragraph_html or html_lib.escape(normalized)}'
+        '</div>'
+    )
+
     payload: dict = {
         "from": from_addr,
         "to": [to_email],
         "subject": subject,
-        "text": body,
+        "text": normalized,
+        "html": html_body,
     }
     if reply_to:
         payload["reply_to"] = reply_to
