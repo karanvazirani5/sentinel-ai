@@ -19,3 +19,8 @@ web/node_modules/
 web/.next/
 
 api/.env
+backend/.env
+.env
+.env.local
+.env.*.local
+

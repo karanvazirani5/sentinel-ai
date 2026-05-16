@@ -17,6 +17,12 @@ from passlib.context import CryptContext
 from fastapi.security import OAuth2PasswordBearer
 from datetime import timedelta
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 SECRET_KEY = os.getenv("AUTH_SECRET_KEY", "change-me-in-prod")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
@@ -37,14 +43,26 @@ Base = declarative_base()
 
 app = FastAPI(title="Sentinel AI")
 
+_default_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://sentinel-ai-frontend.onrender.com",
+    "https://sentinel-ai-1-0ppv.onrender.com",
+]
+_extra_origins = [
+    o.strip()
+    for o in os.getenv("CORS_ORIGINS", "").split(",")
+    if o.strip()
+]
+_origin_regex = os.getenv(
+    "CORS_ORIGIN_REGEX",
+    r"https://.*\.(zeabur\.app|onrender\.com|vercel\.app|railway\.app)",
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://sentinel-ai-frontend.onrender.com",
-        "https://sentinel-ai-1-0ppv.onrender.com",
-    ],
+    allow_origins=_default_origins + _extra_origins,
+    allow_origin_regex=_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1014,10 +1032,13 @@ def research_lead(lead_id: str, db: Session = Depends(get_db)):
 
 @app.post("/generate_researched_draft/{lead_id}", response_model=DraftOut)
 def generate_researched_draft(lead_id: str, db: Session = Depends(get_db)):
+    """Generate a personalized outreach draft via a real LLM call.
+
+    Uses the lead's research fields as context. DEMO_MODE fail-safe in
+    call_llm guarantees a usable response even if the LLM provider fails.
     """
-    Phase 4: tailored draft generation.
-    Builds an email using the research fields on the lead.
-    """
+    from agents.llm import call_llm
+
     lead = db.query(Lead).filter(Lead.id == lead_id).first()
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
@@ -1028,26 +1049,46 @@ def generate_researched_draft(lead_id: str, db: Session = Depends(get_db)):
             detail="Lead has no research yet. Run /research_lead first.",
         )
 
-    subject = f"Idea for {lead.company} to ease {lead.pain_points.split(';')[0]}"
+    cited_fact = getattr(lead, "cited_fact", None)
+    user_prompt = (
+        f"Lead profile:\n"
+        f"Company: {lead.company}\n"
+        f"Contact: {lead.contact_name}\n"
+        f"Industry: {lead.industry or 'unknown'}\n"
+        f"Website: {lead.website or 'unknown'}\n\n"
+        f"Research findings:\n"
+        f"Summary: {lead.research_summary}\n"
+        f"Pain points: {lead.pain_points}\n"
+        f"Personalization note: {lead.personalization_note}\n"
+        f"Cited fact: {cited_fact or '(none)'}\n\n"
+        "Write the email body and a short subject line. "
+        "Output exactly this JSON shape (no prose outside the JSON):\n"
+        "{\"subject\": \"...\", \"body\": \"...\"}"
+    )
 
-    body_lines = [
-        f"Hi {lead.contact_name},",
-        "",
-        f"I've been looking at {lead.company} and how teams in {lead.industry or 'your space'} operate.",
-        lead.research_summary or "",
-        "",
-        f"From the outside it looks like there may be {lead.pain_points}.",
-        "",
-        "I’m working on Sentinel, a lightweight agent system that takes over the repetitive outreach and follow-up work,",
-        "so your team can stay focused on higher–value conversations instead of chasing tasks.",
-        "",
-        lead.personalization_note or "",
-        "",
-        "If it’s helpful, I can share a couple of concrete ideas tailored to your workflow.",
-        "",
-        "Best,",
-        "Karan",
-    ]
+    system_prompt = (
+        "You write 120-word cold outreach emails for Sentinel, an AI agent "
+        "platform that automates outbound sales for small businesses. "
+        "Reference the company's pain points and, when present, the cited "
+        "fact from their website — that proves you actually looked at them. "
+        "Friendly and specific. No salesy language: never use 'guaranteed', "
+        "'ACT NOW', 'limited time', '100%', or multiple exclamation marks. "
+        "Sign off as 'Karan'."
+    )
+
+    llm = call_llm(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_tokens=600,
+    )
+
+    subject, body = _parse_subject_body(
+        llm["text"],
+        fallback_subject=f"Quick idea for {lead.company}",
+        fallback_body=llm["text"],
+    )
 
     draft = Draft(
         id=str(uuid.uuid4()),
@@ -1056,7 +1097,7 @@ def generate_researched_draft(lead_id: str, db: Session = Depends(get_db)):
         contact_name=lead.contact_name,
         email=lead.email,
         subject=subject,
-        body="\n".join(body_lines),
+        body=body,
         status="pending",
         delivery_status="queued",
     )
@@ -1076,14 +1117,38 @@ def generate_researched_draft(lead_id: str, db: Session = Depends(get_db)):
     log_agent_event(
         db,
         agent_id="sales-agent",
-        task_name="generate_researched_draft",
+        task_name="draft_generated",
         event_type="task",
         status="completed",
         hours_saved=0.5,
     )
 
-    log_activity(db, f"Generated researched draft for {lead.company}")
+    log_activity(
+        db,
+        f"Generated researched draft for {lead.company}"
+        + (" (LLM fallback)" if llm.get("fallback") else ""),
+    )
     return draft
+
+
+def _parse_subject_body(text: str, *, fallback_subject: str, fallback_body: str) -> tuple[str, str]:
+    """Best-effort parse of {subject, body} JSON. Tolerant of LLM quirks."""
+    import json
+    import re
+
+    if not text:
+        return fallback_subject, fallback_body
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        data = json.loads(cleaned)
+        subject = (data.get("subject") or "").strip() or fallback_subject
+        body = (data.get("body") or "").strip() or fallback_body
+        return subject, body
+    except Exception:
+        return fallback_subject, fallback_body
 
 
 # -------------------------
