@@ -957,13 +957,6 @@ def get_activity(
     return db.query(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(100).all()
 
 
-@app.get("/stats", response_model=StatsOut)
-def get_stats(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    ...
-
 @app.get("/activity", response_model=List[ActivityOut])
 def get_activity(db: Session = Depends(get_db)):
     return db.query(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(100).all()
@@ -1027,6 +1020,115 @@ def import_real_leads(payload: ImportPayload, db: Session = Depends(get_db)):
 
     log_activity(db, f"Imported {len(created)} real leads")
     return created
+
+
+@app.post("/demo/seed", response_model=List[LeadOut])
+def seed_demo(db: Session = Depends(get_db)):
+    """Create the one perfect demo lead and one risky backup lead.
+
+    The perfect lead is pending research — the live demo clicks Research on
+    it to show the agent fetching a real website. The risky lead already has
+    a pre-built draft containing 'ACT NOW!!! Guaranteed results' so the
+    governance flag is guaranteed to fire on stage.
+    """
+    # Idempotent: clear any prior demo rows tagged with source='demo'.
+    db.query(AgentEvent).filter(
+        AgentEvent.lead_id.in_(
+            [lead.id for lead in db.query(Lead).filter(Lead.source == "demo").all()]
+        )
+    ).delete(synchronize_session=False)
+    db.query(Draft).filter(
+        Draft.lead_id.in_(
+            [lead.id for lead in db.query(Lead).filter(Lead.source == "demo").all()]
+        )
+    ).delete(synchronize_session=False)
+    db.query(Lead).filter(Lead.source == "demo").delete(synchronize_session=False)
+    db.commit()
+
+    perfect = Lead(
+        id=str(uuid.uuid4()),
+        company="Lattice",
+        contact_name="Jack Altman",
+        email="jack@lattice.com",
+        title="CEO & Co-founder",
+        status="new",
+        website="https://lattice.com",
+        industry="HR software (B2B SaaS)",
+        employee_count="201-500",
+        location="San Francisco, CA",
+        source="demo",
+    )
+    db.add(perfect)
+
+    risky = Lead(
+        id=str(uuid.uuid4()),
+        company="Quick Wins Marketing",
+        contact_name="Pat Stevens",
+        email="pat@quickwinsmarketing.example",
+        title="Sales Lead",
+        status="draft_created",
+        website="https://example.com",
+        industry="marketing services",
+        employee_count="11-50",
+        location="Phoenix, AZ",
+        source="demo",
+        research_summary="Quick Wins Marketing is a small marketing agency.",
+        pain_points="manual outreach; pressure to hit aggressive quotas",
+        personalization_note="Reference the team's hustle for fast results.",
+    )
+    db.add(risky)
+    db.commit()
+    db.refresh(perfect)
+    db.refresh(risky)
+
+    # Pre-build a risky draft so the governance demo is one click away.
+    risky_body = (
+        "Hi Pat,\n\n"
+        "ACT NOW!!! Guaranteed results. We deliver 100% lead growth with "
+        "absolutely no risk. LIMITED TIME ONLY — DO NOT MISS OUT!!!\n\n"
+        "Reply today and we'll have you crushing quota by next week.\n\n"
+        "Best,\nKaran"
+    )
+    flags = check_draft_safety(risky_body)
+    risky_draft = Draft(
+        id=str(uuid.uuid4()),
+        lead_id=risky.id,
+        company=risky.company,
+        contact_name=risky.contact_name,
+        email=risky.email,
+        subject="LIMITED TIME: 100% Guaranteed Lead Growth",
+        body=risky_body,
+        status="needs_review" if flags else "pending",
+        delivery_status="queued",
+    )
+    db.add(risky_draft)
+    db.commit()
+
+    ensure_agent(
+        db,
+        agent_id="governance-agent",
+        name="Governance Agent",
+        role="governance",
+        connected_tools="regex,policy",
+    )
+    log_agent_event(
+        db,
+        agent_id="governance-agent",
+        task_name="governance_checked",
+        event_type="governance",
+        status="flagged" if flags else "passed",
+        lead_id=risky.id,
+        tool_input=f"len(body)={len(risky_body)}",
+        tool_output_preview="; ".join(flags) if flags else "no risky patterns detected",
+        error_message="; ".join(flags) if flags else None,
+        hours_saved=0.1,
+    )
+
+    # Pin the perfect lead as the DEMO_MODE fail-safe target.
+    os.environ["DEMO_LEAD_ID"] = perfect.id
+
+    log_activity(db, f"Seeded demo: {perfect.company} (perfect) + {risky.company} (risky)")
+    return [perfect, risky]
 
 
 @app.post("/qualify_leads", response_model=List[LeadOut])
