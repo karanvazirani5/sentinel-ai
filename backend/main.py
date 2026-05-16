@@ -1714,3 +1714,33 @@ def send_draft(draft_id: str, db: Session = Depends(get_db)):
         hours_saved=0.25,
     )
     return draft
+
+
+
+@app.on_event("startup")
+def _bootstrap_demo() -> None:
+    """Self-heal the demo if SQLite was wiped on container restart.
+
+    Creates the canonical demo user and seeds Lattice + Quick Wins leads
+    when missing. Idempotent. Disable with DEMO_AUTOBOOTSTRAP=false.
+    """
+    if os.getenv("DEMO_AUTOBOOTSTRAP", "true").lower() not in {"1", "true", "yes"}:
+        return
+    db = SessionLocal()
+    try:
+        if not get_user_by_email(db, "demo@sentinel.ai"):
+            user = User(
+                id=str(uuid.uuid4()),
+                email="demo@sentinel.ai",
+                password_hash=hash_password("sentinel2026"),
+            )
+            db.add(user)
+            db.commit()
+            print("[bootstrap] created demo user demo@sentinel.ai")
+        if not db.query(Lead).filter(Lead.source == "demo").first():
+            seed_demo(db)
+            print("[bootstrap] seeded demo leads (Lattice + Quick Wins)")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[bootstrap] failed: {exc}")
+    finally:
+        db.close()
