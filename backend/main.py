@@ -709,31 +709,59 @@ def send_email_gmail_api(*, to_email: str, subject: str, body: str) -> str:
     return str(result.get("id") or "")
 
 
+def send_email_resend(*, to_email: str, subject: str, body: str) -> str:
+    """Send via Resend HTTPS API. Returns Resend message id."""
+    import httpx
+
+    api_key = os.getenv("RESEND_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("RESEND_API_KEY not set")
+    from_addr = os.getenv("RESEND_FROM", "Sentinel AI <onboarding@resend.dev>")
+    reply_to = os.getenv("RESEND_REPLY_TO", "").strip() or None
+
+    payload: dict = {
+        "from": from_addr,
+        "to": [to_email],
+        "subject": subject,
+        "text": body,
+    }
+    if reply_to:
+        payload["reply_to"] = reply_to
+
+    with httpx.Client(timeout=20.0) as client:
+        resp = client.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        if resp.status_code >= 300:
+            raise RuntimeError(f"Resend {resp.status_code}: {resp.text[:300]}")
+        data = resp.json()
+    return str(data.get("id") or "")
+
+
 def send_email(*, to_email: str, subject: str, body: str) -> str:
+    """Delivery priority:
+    1. Resend (if RESEND_API_KEY) — recommended for hackathon
+    2. Gmail API (if EMAIL_PROVIDER=gmail and Gmail OAuth configured)
+    3. SMTP (if EMAIL_PROVIDER=smtp or as Gmail-API fallback)
     """
-    Primary: Gmail API (if configured).
-    Fallback: SMTP (if configured).
-    """
+    if os.getenv("RESEND_API_KEY"):
+        return send_email_resend(to_email=to_email, subject=subject, body=body)
+
     provider = (os.getenv("EMAIL_PROVIDER") or "gmail").lower()
 
     if provider == "gmail":
         try:
             return send_email_gmail_api(to_email=to_email, subject=subject, body=body)
         except Exception as gmail_err:
-            # If SMTP is configured, fall back automatically.
             smtp_host = os.getenv("SMTP_HOST")
             smtp_user = os.getenv("SMTP_USER")
             smtp_password = os.getenv("SMTP_PASSWORD")
             if smtp_host and smtp_user and smtp_password:
-                log_fallback = os.getenv("EMAIL_FALLBACK_LOG", "true").lower() in {
-                    "1",
-                    "true",
-                    "yes",
-                    "y",
-                }
-                if log_fallback:
-                    # Raising after commit is handled by caller; this is just delivery attempt.
-                    _ = gmail_err
                 return send_email_smtp(to_email=to_email, subject=subject, body=body)
             raise gmail_err
 
@@ -1669,9 +1697,13 @@ def send_draft(draft_id: str, db: Session = Depends(get_db)):
     db.commit()
 
     demo_mode = os.getenv("DEMO_MODE", "false").lower() in {"1", "true", "yes"}
-    smtp_configured = bool(os.getenv("SMTP_HOST") or os.getenv("GMAIL_CLIENT_SECRETS"))
+    email_configured = bool(
+        os.getenv("RESEND_API_KEY")
+        or os.getenv("SMTP_HOST")
+        or os.getenv("GMAIL_CLIENT_SECRETS")
+    )
 
-    if demo_mode and not smtp_configured:
+    if demo_mode and not email_configured:
         # Stage-demo path: skip the real SMTP/Gmail call and mark sent. The
         # audience sees the same UI transition; no live email is required.
         message_id = f"demo-{uuid.uuid4().hex[:12]}"
