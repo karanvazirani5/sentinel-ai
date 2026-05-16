@@ -985,39 +985,13 @@ def update_draft(draft_id: str, payload: DraftUpdateIn, db: Session = Depends(ge
     log_activity(db, f"Edited draft for {draft.company}")
     return draft
 
-@app.get("/leads", response_model=List[LeadOut])
-def get_leads(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    return db.query(Lead).order_by(Lead.created_at.desc()).all()
-
-@app.get("/drafts", response_model=List[DraftOut])
-def get_drafts(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    return db.query(Draft).order_by(Draft.created_at.desc()).all()
-
-
-@app.get("/activity", response_model=List[ActivityOut])
-def get_activity(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    return db.query(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(100).all()
-
-
 @app.get("/activity", response_model=List[ActivityOut])
 def get_activity(db: Session = Depends(get_db)):
     return db.query(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(100).all()
 
 
 @app.get("/stats")
-def get_stats(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
+def get_stats(db: Session = Depends(get_db)):
     try:
         total_leads = db.query(Lead).count()
         new_leads = db.query(Lead).filter(Lead.status == "new").count()
