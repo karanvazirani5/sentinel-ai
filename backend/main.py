@@ -1,5 +1,6 @@
 from typing import Optional, List
 import os
+import re
 import uuid
 from datetime import datetime
 import smtplib
@@ -1166,6 +1167,9 @@ def generate_researched_draft(lead_id: str, db: Session = Depends(get_db)):
         fallback_body=llm["text"],
     )
 
+    flags = check_draft_safety(subject + "\n" + body)
+    draft_status = "needs_review" if flags else "pending"
+
     draft = Draft(
         id=str(uuid.uuid4()),
         lead_id=lead.id,
@@ -1174,7 +1178,7 @@ def generate_researched_draft(lead_id: str, db: Session = Depends(get_db)):
         email=lead.email,
         subject=subject,
         body=body,
-        status="pending",
+        status=draft_status,
         delivery_status="queued",
     )
     db.add(draft)
@@ -1205,12 +1209,59 @@ def generate_researched_draft(lead_id: str, db: Session = Depends(get_db)):
         tokens_out=llm.get("tokens_out"),
     )
 
+    ensure_agent(
+        db,
+        agent_id="governance-agent",
+        name="Governance Agent",
+        role="governance",
+        connected_tools="regex,policy",
+    )
+    log_agent_event(
+        db,
+        agent_id="governance-agent",
+        task_name="governance_checked",
+        event_type="governance",
+        status="flagged" if flags else "passed",
+        lead_id=lead.id,
+        tool_input=f"len(body)={len(body)}",
+        tool_output_preview=(
+            ("; ".join(flags)) if flags else "no risky patterns detected"
+        ),
+        error_message="; ".join(flags) if flags else None,
+        hours_saved=0.1,
+    )
+
     log_activity(
         db,
         f"Generated researched draft for {lead.company}"
-        + (" (LLM fallback)" if llm.get("fallback") else ""),
+        + (" (LLM fallback)" if llm.get("fallback") else "")
+        + (" [governance: needs_review]" if flags else ""),
     )
     return draft
+
+
+_RISKY_PATTERNS = [
+    (re.compile(r"\bguarantee(?:d|s)?\b", re.IGNORECASE), "uses 'guarantee'"),
+    (re.compile(r"\bact now\b", re.IGNORECASE), "uses 'ACT NOW'"),
+    (re.compile(r"\blimited time\b", re.IGNORECASE), "uses 'limited time'"),
+    (re.compile(r"!{3,}"), "uses excessive exclamation marks"),
+    (re.compile(r"\b100\s*%\b"), "uses absolute claim '100%'"),
+    (re.compile(r"\bno risk\b", re.IGNORECASE), "uses absolute claim 'no risk'"),
+    (re.compile(r"\bzero downside\b", re.IGNORECASE), "uses absolute claim 'zero downside'"),
+    (re.compile(r"\b(?:[A-Z]{3,}\b\s+){4,}[A-Z]{3,}\b"), "uses ALL-CAPS pressure language"),
+]
+
+
+def check_draft_safety(text: str) -> list[str]:
+    """Regex-based governance check. Returns a list of human-readable flag
+    reasons; an empty list means the draft is clean."""
+    if not text:
+        return []
+    flags: list[str] = []
+    for pattern, label in _RISKY_PATTERNS:
+        if pattern.search(text):
+            flags.append(label)
+    return flags
 
 
 def _parse_subject_body(text: str, *, fallback_subject: str, fallback_body: str) -> tuple[str, str]:

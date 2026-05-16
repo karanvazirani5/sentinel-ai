@@ -22,6 +22,26 @@ type Lead = {
   research_summary?: string | null;
   pain_points?: string | null;
   personalization_note?: string | null;
+  cited_fact?: string | null;
+};
+
+type AgentEvent = {
+  id: string;
+  agent_id: string;
+  event_type: string;
+  task_name?: string | null;
+  status?: string | null;
+  error_message?: string | null;
+  details?: string | null;
+  created_at: string;
+  lead_id?: string | null;
+  tool_input?: string | null;
+  tool_output_preview?: string | null;
+  latency_ms?: string | null;
+  tokens_in?: string | null;
+  tokens_out?: string | null;
+  cost_usd?: string | null;
+  hours_saved?: string | null;
 };
 
 type Draft = {
@@ -193,6 +213,16 @@ export default function SentinelPage() {
   const [editingDraftId, setEditingDraftId] = useState<string | null>(null);
   const [draftSubject, setDraftSubject] = useState("");
   const [draftBody, setDraftBody] = useState("");
+
+  const [reasoningOpen, setReasoningOpen] = useState(false);
+  const [reasoningLead, setReasoningLead] = useState<Lead | null>(null);
+  const [reasoningEvents, setReasoningEvents] = useState<AgentEvent[]>([]);
+  const [reasoningLoading, setReasoningLoading] = useState(false);
+
+  const llmProvider =
+    (typeof process !== "undefined" &&
+      process.env?.NEXT_PUBLIC_LLM_PROVIDER) ||
+    "OpenAI";
 
   async function loadAll() {
     try {
@@ -579,8 +609,29 @@ export default function SentinelPage() {
     }
   }
 
+  async function fetchAgentEvents(leadId: string): Promise<AgentEvent[]> {
+    try {
+      const res = await apiFetch(`/agent_events?lead_id=${leadId}&limit=200`);
+      if (!res.ok) return [];
+      return (await res.json()) as AgentEvent[];
+    } catch (error) {
+      console.error(error);
+      return [];
+    }
+  }
+
+  async function openReasoningTrace(lead: Lead) {
+    setReasoningLead(lead);
+    setReasoningOpen(true);
+    setReasoningLoading(true);
+    const events = await fetchAgentEvents(lead.id);
+    setReasoningEvents(events);
+    setReasoningLoading(false);
+  }
+
   async function handleResearchLead(leadId: string) {
     setLoading(true);
+    setReasoningLoading(true);
     try {
       const res = await apiFetch(`/research_lead/${leadId}`, {
         method: "POST",
@@ -590,13 +641,22 @@ export default function SentinelPage() {
         setHelperOutput(data.detail || "Failed to research lead.");
         return;
       }
-      setHelperOutput(`Researched ${data.company}.`);
+      setHelperOutput(
+        data.cited_fact
+          ? `Researched ${data.company}. Cited fact: ${data.cited_fact}`
+          : `Researched ${data.company}.`
+      );
+      setReasoningLead(data as Lead);
+      setReasoningOpen(true);
+      const events = await fetchAgentEvents(leadId);
+      setReasoningEvents(events);
       await loadAll();
     } catch (error) {
       console.error(error);
       setHelperOutput("Failed to research lead.");
     } finally {
       setLoading(false);
+      setReasoningLoading(false);
     }
   }
 
@@ -636,15 +696,22 @@ export default function SentinelPage() {
       <div className="mx-auto max-w-7xl px-6 py-10">
         <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
           <div>
-            <div className="text-sm font-bold uppercase tracking-[0.2em] text-sky-600">
-              Sentinel AI
+            <div className="flex items-center gap-3">
+              <div className="text-sm font-bold uppercase tracking-[0.2em] text-sky-600">
+                Sentinel AI
+              </div>
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                Powered by {llmProvider}
+              </span>
             </div>
             <h1 className="mt-2 text-4xl font-black tracking-tight">
-              AI Outreach Workflow Control Center
+              Control Layer for Autonomous Sales Agents
             </h1>
             <p className="mt-3 max-w-3xl text-base text-slate-600">
-              Manage lead generation, draft creation, approval workflow, send
-              actions, and activity logs from one place.
+              Sentinel researches leads using live web data, generates
+              personalized outreach with an AI agent, logs every step the
+              agent takes, and flags risky language before anything goes out.
             </p>
           </div>
 
@@ -851,11 +918,28 @@ export default function SentinelPage() {
                           )}
                           {(lead.research_summary ||
                             lead.pain_points ||
-                            lead.personalization_note) && (
+                            lead.personalization_note ||
+                            lead.cited_fact) && (
                             <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
-                              <div className="font-semibold text-slate-800">
-                                Research
+                              <div className="flex items-center justify-between">
+                                <div className="font-semibold text-slate-800">
+                                  Research
+                                </div>
+                                <button
+                                  onClick={() => openReasoningTrace(lead)}
+                                  className="rounded-full border border-sky-300 bg-white px-2.5 py-0.5 text-[11px] font-semibold text-sky-700 hover:bg-sky-50"
+                                >
+                                  View reasoning trace
+                                </button>
                               </div>
+                              {lead.cited_fact && (
+                                <div className="mt-1 rounded-lg bg-emerald-50 px-2 py-1 text-emerald-800">
+                                  <span className="font-semibold">
+                                    Cited fact:
+                                  </span>{" "}
+                                  {lead.cited_fact}
+                                </div>
+                              )}
                               {lead.research_summary && (
                                 <div className="mt-1">
                                   <span className="font-semibold">
@@ -1287,6 +1371,133 @@ export default function SentinelPage() {
           </section>
         )}
       </div>
+
+      {reasoningOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/60 p-4 md:items-center"
+          onClick={() => setReasoningOpen(false)}
+        >
+          <div
+            className="w-full max-w-3xl overflow-hidden rounded-3xl bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between border-b border-slate-200 bg-slate-50 px-6 py-4">
+              <div>
+                <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-sky-600">
+                  Agent Reasoning Trace
+                </div>
+                <div className="mt-1 text-lg font-black text-slate-900">
+                  {reasoningLead?.company || "Lead"}
+                </div>
+                {reasoningLead?.cited_fact && (
+                  <div className="mt-2 max-w-xl rounded-lg bg-emerald-50 px-3 py-1 text-xs text-emerald-800">
+                    <span className="font-semibold">Cited fact:</span>{" "}
+                    {reasoningLead.cited_fact}
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={() => setReasoningOpen(false)}
+                className="rounded-full border border-slate-300 px-3 py-1 text-xs font-bold text-slate-700 hover:bg-slate-100"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="max-h-[60vh] overflow-y-auto px-6 py-5">
+              {reasoningLoading && reasoningEvents.length === 0 ? (
+                <div className="text-sm text-slate-500">
+                  Loading agent steps…
+                </div>
+              ) : reasoningEvents.length === 0 ? (
+                <div className="text-sm text-slate-500">
+                  No agent events recorded for this lead yet.
+                </div>
+              ) : (
+                <ol className="space-y-3">
+                  {reasoningEvents.map((event, idx) => {
+                    const statusColor =
+                      event.status === "flagged"
+                        ? "border-red-300 bg-red-50 text-red-700"
+                        : event.status === "fallback"
+                        ? "border-amber-300 bg-amber-50 text-amber-700"
+                        : "border-emerald-300 bg-emerald-50 text-emerald-700";
+                    return (
+                      <li
+                        key={event.id}
+                        className="rounded-2xl border border-slate-200 bg-white p-4"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">
+                            {idx + 1}
+                          </span>
+                          <span className="font-mono text-sm font-semibold text-slate-900">
+                            {event.task_name || event.event_type}
+                          </span>
+                          <span
+                            className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${statusColor}`}
+                          >
+                            {event.status || event.event_type}
+                          </span>
+                          <span className="ml-auto text-[11px] text-slate-500">
+                            {event.latency_ms ? `${event.latency_ms} ms` : ""}
+                            {event.tokens_in && event.tokens_out
+                              ? ` · ${event.tokens_in}/${event.tokens_out} tok`
+                              : ""}
+                          </span>
+                        </div>
+                        {event.tool_input && (
+                          <div className="mt-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                              Input
+                            </div>
+                            <div className="mt-1 font-mono break-words">
+                              {event.tool_input}
+                            </div>
+                          </div>
+                        )}
+                        {event.tool_output_preview && (
+                          <div className="mt-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                            <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                              Output
+                            </div>
+                            <div className="mt-1 whitespace-pre-wrap break-words">
+                              {event.tool_output_preview}
+                            </div>
+                          </div>
+                        )}
+                        {event.error_message && (
+                          <div className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
+                            {event.error_message}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ol>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-6 py-3 text-xs text-slate-600">
+              <span>
+                {reasoningEvents.length} step
+                {reasoningEvents.length === 1 ? "" : "s"} logged
+              </span>
+              {reasoningLead && (
+                <button
+                  onClick={() => {
+                    setReasoningOpen(false);
+                    handleGenerateResearchedDraft(reasoningLead.id);
+                  }}
+                  className="rounded-2xl bg-sky-600 px-4 py-2 text-sm font-bold text-white hover:bg-sky-700"
+                >
+                  Generate Draft
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
