@@ -1074,7 +1074,7 @@ def seed_demo(db: Session = Depends(get_db)):
         id=str(uuid.uuid4()),
         company="Lattice",
         contact_name="Jack Altman",
-        email=os.getenv("DEMO_LEAD_EMAIL", "kvvaziran@gmail.com"),
+        email=os.getenv("DEMO_LEAD_EMAIL", "kvvazirani@gmail.com"),
         title="CEO & Co-founder",
         status="new",
         website="https://lattice.com",
@@ -1089,7 +1089,7 @@ def seed_demo(db: Session = Depends(get_db)):
         id=str(uuid.uuid4()),
         company="Quick Wins Marketing",
         contact_name="Pat Stevens",
-        email=os.getenv("DEMO_LEAD_EMAIL", "kvvaziran@gmail.com"),
+        email=os.getenv("DEMO_LEAD_EMAIL", "kvvazirani@gmail.com"),
         title="Sales Lead",
         status="draft_created",
         website="https://example.com",
@@ -1695,17 +1695,14 @@ def send_draft(draft_id: str, db: Session = Depends(get_db)):
     db.commit()
 
     demo_mode = os.getenv("DEMO_MODE", "false").lower() in {"1", "true", "yes"}
-    email_configured = bool(
-        os.getenv("RESEND_API_KEY")
-        or os.getenv("SMTP_HOST")
-        or os.getenv("GMAIL_CLIENT_SECRETS")
-    )
 
-    if demo_mode and not email_configured:
+    if demo_mode:
         # Stage-demo path: skip the real SMTP/Gmail call and mark sent. The
         # audience sees the same UI transition; no live email is required.
+        # DEMO_MODE forces this even when RESEND_API_KEY/SMTP/Gmail are set,
+        # so a misconfigured provider can't break the live demo.
         message_id = f"demo-{uuid.uuid4().hex[:12]}"
-        log_activity(db, f"[DEMO] Simulated send for {draft.email} (no SMTP configured)")
+        log_activity(db, f"[DEMO] Simulated send for {draft.email}")
     else:
         try:
             message_id = send_email(
@@ -1779,6 +1776,24 @@ def _bootstrap_demo() -> None:
         if not db.query(Lead).filter(Lead.source == "demo").first():
             seed_demo(db)
             print("[bootstrap] seeded demo leads (Lattice + Quick Wins)")
+        else:
+            # Repair seeded demo leads whose email was set from the typo'd
+            # default ("kvvaziran@gmail.com"). Switch them to the current
+            # DEMO_LEAD_EMAIL so Resend's sandbox sender can deliver.
+            target_email = os.getenv("DEMO_LEAD_EMAIL", "kvvazirani@gmail.com")
+            stale = (
+                db.query(Lead)
+                .filter(Lead.source == "demo", Lead.email == "kvvaziran@gmail.com")
+                .all()
+            )
+            if stale:
+                for lead in stale:
+                    lead.email = target_email
+                db.query(Draft).filter(
+                    Draft.lead_id.in_([lead.id for lead in stale])
+                ).update({Draft.email: target_email}, synchronize_session=False)
+                db.commit()
+                print(f"[bootstrap] repaired {len(stale)} demo lead email(s) -> {target_email}")
     except Exception as exc:  # noqa: BLE001
         print(f"[bootstrap] failed: {exc}")
     finally:
