@@ -219,6 +219,19 @@ export default function SentinelPage() {
   const [reasoningEvents, setReasoningEvents] = useState<AgentEvent[]>([]);
   const [reasoningLoading, setReasoningLoading] = useState(false);
 
+  const [addLeadOpen, setAddLeadOpen] = useState(false);
+  const [addLeadSubmitting, setAddLeadSubmitting] = useState(false);
+  const [newLead, setNewLead] = useState({
+    company: "",
+    contact_name: "",
+    email: "",
+    title: "",
+    website: "",
+    industry: "",
+    location: "",
+    employee_count: "",
+  });
+
   const llmProvider =
     (typeof process !== "undefined" &&
       process.env?.NEXT_PUBLIC_LLM_PROVIDER) ||
@@ -682,6 +695,64 @@ export default function SentinelPage() {
     }
   }
 
+  function resetNewLead() {
+    setNewLead({
+      company: "",
+      contact_name: "",
+      email: "",
+      title: "",
+      website: "",
+      industry: "",
+      location: "",
+      employee_count: "",
+    });
+  }
+
+  async function handleAddLeadSubmit() {
+    if (!newLead.company.trim() || !newLead.contact_name.trim() || !newLead.email.trim()) {
+      setHelperOutput("Company, contact name, and email are required.");
+      return;
+    }
+    setAddLeadSubmitting(true);
+    try {
+      const payload = {
+        leads: [
+          {
+            company: newLead.company.trim(),
+            contact_name: newLead.contact_name.trim(),
+            email: newLead.email.trim(),
+            title: newLead.title.trim() || undefined,
+            website: newLead.website.trim() || undefined,
+            industry: newLead.industry.trim() || undefined,
+            location: newLead.location.trim() || undefined,
+            employee_count: newLead.employee_count.trim() || undefined,
+            source: "manual",
+          },
+        ],
+      };
+      const res = await apiFetch("/import_real_leads", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setHelperOutput(data?.detail || "Failed to add lead.");
+        return;
+      }
+      const added = data?.[0];
+      setHelperOutput(`Added ${added?.company || "lead"}. Click Research to run the agent.`);
+      setAddLeadOpen(false);
+      resetNewLead();
+      await loadAll();
+      setActiveTab("leads");
+    } catch (error) {
+      console.error(error);
+      setHelperOutput("Failed to add lead.");
+    } finally {
+      setAddLeadSubmitting(false);
+    }
+  }
+
   const draftsByLead = useMemo(() => {
     const map: Record<string, Draft[]> = {};
     for (const draft of drafts) {
@@ -716,6 +787,14 @@ export default function SentinelPage() {
           </div>
 
           <div className="flex flex-wrap gap-3">
+            <button
+              onClick={() => setAddLeadOpen(true)}
+              className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-emerald-700 disabled:opacity-50"
+              disabled={loading}
+            >
+              + Add Real Lead
+            </button>
+
             <button
               onClick={handleGenerateLeads}
               className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-bold text-white shadow-sm transition hover:opacity-90 disabled:opacity-50"
@@ -1371,6 +1450,156 @@ export default function SentinelPage() {
           </section>
         )}
       </div>
+
+      {addLeadOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4"
+          onClick={() => !addLeadSubmitting && setAddLeadOpen(false)}
+        >
+          <div
+            className="w-full max-w-xl overflow-hidden rounded-3xl bg-white shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between border-b border-slate-200 bg-slate-50 px-6 py-4">
+              <div>
+                <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-700">
+                  Add Real Lead
+                </div>
+                <div className="mt-1 text-lg font-black text-slate-900">
+                  Drop in a real company and run the agent on it
+                </div>
+                <div className="mt-1 text-xs text-slate-600">
+                  Website + industry help the agent find a stronger cited fact.
+                </div>
+              </div>
+              <button
+                onClick={() => !addLeadSubmitting && setAddLeadOpen(false)}
+                className="rounded-full border border-slate-300 px-3 py-1 text-xs font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                disabled={addLeadSubmitting}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="grid gap-3 px-6 py-5 md:grid-cols-2">
+              <label className="flex flex-col text-xs font-semibold text-slate-700">
+                Company *
+                <input
+                  type="text"
+                  value={newLead.company}
+                  onChange={(e) =>
+                    setNewLead({ ...newLead, company: e.target.value })
+                  }
+                  className="mt-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal text-slate-900 focus:border-emerald-500 focus:outline-none"
+                  placeholder="Acme Logistics"
+                />
+              </label>
+              <label className="flex flex-col text-xs font-semibold text-slate-700">
+                Contact name *
+                <input
+                  type="text"
+                  value={newLead.contact_name}
+                  onChange={(e) =>
+                    setNewLead({ ...newLead, contact_name: e.target.value })
+                  }
+                  className="mt-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal text-slate-900 focus:border-emerald-500 focus:outline-none"
+                  placeholder="Jane Doe"
+                />
+              </label>
+              <label className="flex flex-col text-xs font-semibold text-slate-700">
+                Email *
+                <input
+                  type="email"
+                  value={newLead.email}
+                  onChange={(e) =>
+                    setNewLead({ ...newLead, email: e.target.value })
+                  }
+                  className="mt-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal text-slate-900 focus:border-emerald-500 focus:outline-none"
+                  placeholder="jane@acme.com"
+                />
+              </label>
+              <label className="flex flex-col text-xs font-semibold text-slate-700">
+                Title
+                <input
+                  type="text"
+                  value={newLead.title}
+                  onChange={(e) =>
+                    setNewLead({ ...newLead, title: e.target.value })
+                  }
+                  className="mt-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal text-slate-900 focus:border-emerald-500 focus:outline-none"
+                  placeholder="VP Operations"
+                />
+              </label>
+              <label className="flex flex-col text-xs font-semibold text-slate-700 md:col-span-2">
+                Website
+                <input
+                  type="url"
+                  value={newLead.website}
+                  onChange={(e) =>
+                    setNewLead({ ...newLead, website: e.target.value })
+                  }
+                  className="mt-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal text-slate-900 focus:border-emerald-500 focus:outline-none"
+                  placeholder="https://acme.com"
+                />
+              </label>
+              <label className="flex flex-col text-xs font-semibold text-slate-700">
+                Industry
+                <input
+                  type="text"
+                  value={newLead.industry}
+                  onChange={(e) =>
+                    setNewLead({ ...newLead, industry: e.target.value })
+                  }
+                  className="mt-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal text-slate-900 focus:border-emerald-500 focus:outline-none"
+                  placeholder="Logistics"
+                />
+              </label>
+              <label className="flex flex-col text-xs font-semibold text-slate-700">
+                Location
+                <input
+                  type="text"
+                  value={newLead.location}
+                  onChange={(e) =>
+                    setNewLead({ ...newLead, location: e.target.value })
+                  }
+                  className="mt-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal text-slate-900 focus:border-emerald-500 focus:outline-none"
+                  placeholder="Sunnyvale, CA"
+                />
+              </label>
+              <label className="flex flex-col text-xs font-semibold text-slate-700">
+                Employee count
+                <input
+                  type="text"
+                  value={newLead.employee_count}
+                  onChange={(e) =>
+                    setNewLead({ ...newLead, employee_count: e.target.value })
+                  }
+                  className="mt-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-normal text-slate-900 focus:border-emerald-500 focus:outline-none"
+                  placeholder="11-50"
+                />
+              </label>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-6 py-3">
+              <span className="text-[11px] text-slate-500">
+                * required. The agent fetches the website and writes a personalized draft.
+              </span>
+              <button
+                onClick={handleAddLeadSubmit}
+                className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
+                disabled={
+                  addLeadSubmitting ||
+                  !newLead.company.trim() ||
+                  !newLead.contact_name.trim() ||
+                  !newLead.email.trim()
+                }
+              >
+                {addLeadSubmitting ? "Adding…" : "Add Lead"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {reasoningOpen && (
         <div
