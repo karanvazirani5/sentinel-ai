@@ -20,6 +20,7 @@ from .llm import call_llm
 DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() in {"1", "true", "yes"}
 DEMO_LEAD_ID = os.getenv("DEMO_LEAD_ID", "").strip() or None
 BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY", "").strip() or None
+BRIGHT_DATA_ZONE = os.getenv("BRIGHT_DATA_ZONE", "sentinel").strip() or "sentinel"
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -47,12 +48,17 @@ def _strip_html(html: str) -> str:
 
 
 def _fetch_via_bright_data(url: str) -> tuple[str, int]:
-    """Attempt Bright Data Web Unlocker. If we don't know the exact contract,
-    fall back fast — the deploy can still show the agent working via httpx."""
+    """Bright Data Web Unlocker. Requires BRIGHT_DATA_API_KEY and
+    BRIGHT_DATA_ZONE (the name of a zone created in the Bright Data
+    dashboard). Raises on any non-2xx so the caller falls through to httpx.
+    """
     started = time.time()
-    headers = {"Authorization": f"Bearer {BRIGHT_DATA_API_KEY}"}
-    payload = {"url": url, "format": "raw"}
-    with httpx.Client(timeout=12.0, follow_redirects=True) as client:
+    headers = {
+        "Authorization": f"Bearer {BRIGHT_DATA_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {"zone": BRIGHT_DATA_ZONE, "url": url, "format": "raw"}
+    with httpx.Client(timeout=20.0, follow_redirects=True) as client:
         resp = client.post(
             "https://api.brightdata.com/request",
             headers=headers,
