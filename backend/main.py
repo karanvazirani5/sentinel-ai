@@ -100,6 +100,7 @@ class Lead(Base):
     research_summary = Column(Text, nullable=True)
     pain_points = Column(Text, nullable=True)
     personalization_note = Column(Text, nullable=True)
+    cited_fact = Column(Text, nullable=True)
 
 
 class Draft(Base):
@@ -154,6 +155,15 @@ class AgentEvent(Base):
     error_message = Column(Text, nullable=True)
     details = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Reasoning trace fields (Phase 4)
+    lead_id = Column(String, nullable=True, index=True)
+    tool_input = Column(Text, nullable=True)
+    tool_output_preview = Column(Text, nullable=True)
+    latency_ms = Column(String, nullable=True)
+    tokens_in = Column(String, nullable=True)
+    tokens_out = Column(String, nullable=True)
+    cost_usd = Column(String, nullable=True)
 
 
 class Ticket(Base):
@@ -229,6 +239,16 @@ _sqlite_ensure_column("leads", "qualified", "qualified VARCHAR")
 _sqlite_ensure_column("leads", "research_summary", "research_summary TEXT")
 _sqlite_ensure_column("leads", "pain_points", "pain_points TEXT")
 _sqlite_ensure_column("leads", "personalization_note", "personalization_note TEXT")
+_sqlite_ensure_column("leads", "cited_fact", "cited_fact TEXT")
+
+# AgentEvent reasoning-trace fields (Phase 4).
+_sqlite_ensure_column("agent_events", "lead_id", "lead_id VARCHAR")
+_sqlite_ensure_column("agent_events", "tool_input", "tool_input TEXT")
+_sqlite_ensure_column("agent_events", "tool_output_preview", "tool_output_preview TEXT")
+_sqlite_ensure_column("agent_events", "latency_ms", "latency_ms VARCHAR")
+_sqlite_ensure_column("agent_events", "tokens_in", "tokens_in VARCHAR")
+_sqlite_ensure_column("agent_events", "tokens_out", "tokens_out VARCHAR")
+_sqlite_ensure_column("agent_events", "cost_usd", "cost_usd VARCHAR")
 
 # Basic compatibility for new agent-related tables when an old DB exists.
 _sqlite_ensure_column("tickets", "subject", "subject VARCHAR")
@@ -274,6 +294,7 @@ class LeadOut(BaseModel):
     research_summary: Optional[str] = None
     pain_points: Optional[str] = None
     personalization_note: Optional[str] = None
+    cited_fact: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -369,6 +390,29 @@ class GovernanceEventOut(BaseModel):
     error_message: Optional[str] = None
     details: Optional[str] = None
     created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AgentEventOut(BaseModel):
+    id: str
+    agent_id: str
+    event_type: str
+    task_name: Optional[str] = None
+    status: Optional[str] = None
+    error_message: Optional[str] = None
+    details: Optional[str] = None
+    created_at: datetime
+
+    lead_id: Optional[str] = None
+    tool_input: Optional[str] = None
+    tool_output_preview: Optional[str] = None
+    latency_ms: Optional[str] = None
+    tokens_in: Optional[str] = None
+    tokens_out: Optional[str] = None
+    cost_usd: Optional[str] = None
+    hours_saved: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -504,7 +548,14 @@ def log_agent_event(
     hours_saved: Optional[float] = None,
     error_message: Optional[str] = None,
     details: Optional[str] = None,
-) -> None:
+    lead_id: Optional[str] = None,
+    tool_input: Optional[str] = None,
+    tool_output_preview: Optional[str] = None,
+    latency_ms: Optional[int] = None,
+    tokens_in: Optional[int] = None,
+    tokens_out: Optional[int] = None,
+    cost_usd: Optional[float] = None,
+) -> "AgentEvent":
     event = AgentEvent(
         id=str(uuid.uuid4()),
         agent_id=agent_id,
@@ -515,9 +566,18 @@ def log_agent_event(
         hours_saved=str(hours_saved) if hours_saved is not None else None,
         error_message=error_message,
         details=details,
+        lead_id=lead_id,
+        tool_input=(tool_input[:500] if tool_input else None),
+        tool_output_preview=(tool_output_preview[:500] if tool_output_preview else None),
+        latency_ms=str(latency_ms) if latency_ms is not None else None,
+        tokens_in=str(tokens_in) if tokens_in is not None else None,
+        tokens_out=str(tokens_out) if tokens_out is not None else None,
+        cost_usd=str(cost_usd) if cost_usd is not None else None,
     )
     db.add(event)
     db.commit()
+    db.refresh(event)
+    return event
 
 
 def score_icp(lead: Lead) -> tuple[int, str, bool]:
@@ -798,6 +858,26 @@ def get_governance_events(db: Session = Depends(get_db)):
     return events
 
 
+@app.get("/agent_events", response_model=List[AgentEventOut])
+def get_agent_events(
+    lead_id: Optional[str] = None,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+):
+    """Full reasoning trace, optionally filtered to a single lead.
+    Ordered ASC by created_at so the UI can render steps in order.
+    """
+    q = db.query(AgentEvent)
+    if lead_id:
+        q = q.filter(AgentEvent.lead_id == lead_id)
+    events = (
+        q.order_by(AgentEvent.created_at.asc())
+        .limit(max(1, min(limit, 500)))
+        .all()
+    )
+    return events
+
+
 @app.get("/roi_summary", response_model=RoiSummaryOut)
 def get_roi_summary(db: Session = Depends(get_db)):
     """
@@ -970,63 +1050,59 @@ def qualify_leads(db: Session = Depends(get_db)):
 
 @app.post("/research_lead/{lead_id}", response_model=LeadOut)
 def research_lead(lead_id: str, db: Session = Depends(get_db)):
-    """
-    Phase 3: research layer.
-    Generates a simple research summary, pain points, and personalization note
-    based on the lead fields we already have.
-    """
+    """Run the research agent: fetch the lead's website, ask the LLM for
+    structured research with a cited_fact, log every step as an AgentEvent
+    so the Reasoning Trace UI has data to show."""
+    from agents.research_agent import run_research
+
     lead = db.query(Lead).filter(Lead.id == lead_id).first()
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
-
-    industry = (lead.industry or "their industry").strip()
-    company = lead.company
-    contact = lead.contact_name
-
-    lead.research_summary = (
-        f"{company} appears to be a {industry.lower()} business. "
-        f"{company} likely relies on a small team to keep operations and customer work moving."
-    )
-
-    pains: list[str] = []
-    if lead.employee_count and any(k in (lead.employee_count or "").lower() for k in ["1-10", "11-50", "small"]):
-        pains.append("limited team capacity and manual workflows")
-    if "logistics" in industry.lower():
-        pains.append("coordination across shipments, drivers, and customers")
-    if "dental" in industry.lower() or "medical" in industry.lower():
-        pains.append("front-desk scheduling and follow-up with patients")
-    if "cpa" in industry.lower() or "account" in industry.lower():
-        pains.append("repetitive client email and document follow-up")
-    if not pains:
-        pains.append("manual processes across the team")
-
-    lead.pain_points = "; ".join(pains)
-
-    lead.personalization_note = (
-        f"Mention {company} by name and reference that {contact} likely feels "
-        f"the pain of \"{pains[0]}\" in their day-to-day work."
-    )
-
-    db.commit()
-    db.refresh(lead)
 
     ensure_agent(
         db,
         agent_id="research-agent",
         name="Research Agent",
         role="research",
-        connected_tools="CSV,Web (future)",
-    )
-    log_agent_event(
-        db,
-        agent_id="research-agent",
-        task_name="research_lead",
-        event_type="task",
-        status="completed",
-        hours_saved=0.3,
+        connected_tools="httpx,LLM,Bright Data (optional)",
     )
 
-    log_activity(db, f"Researched lead {lead.company}")
+    result = run_research(lead)
+    research = result["research"]
+    trace = result["trace"]
+    fallback = result.get("fallback", False)
+
+    # Persist research onto the lead.
+    lead.research_summary = research.get("company_summary") or lead.research_summary
+    lead.pain_points = research.get("pain_points") or lead.pain_points
+    lead.personalization_note = research.get("personalization_note") or lead.personalization_note
+    lead.cited_fact = research.get("cited_fact")
+    lead.status = "researched"
+    db.commit()
+    db.refresh(lead)
+
+    # Log every step of the trace as an AgentEvent so the UI surfaces it.
+    for step in trace:
+        log_agent_event(
+            db,
+            agent_id="research-agent",
+            task_name=step["task_name"],
+            event_type="task",
+            status=step.get("status") or "completed",
+            lead_id=lead.id,
+            tool_input=step.get("tool_input"),
+            tool_output_preview=step.get("tool_output_preview"),
+            latency_ms=step.get("latency_ms"),
+            tokens_in=step.get("tokens_in"),
+            tokens_out=step.get("tokens_out"),
+            hours_saved=0.1,
+            details=step.get("details"),
+        )
+
+    log_activity(
+        db,
+        f"Researched lead {lead.company}" + (" (fallback)" if fallback else ""),
+    )
     return lead
 
 
@@ -1112,15 +1188,21 @@ def generate_researched_draft(lead_id: str, db: Session = Depends(get_db)):
         agent_id="sales-agent",
         name="Sales Agent",
         role="sales",
-        connected_tools="Gmail,CSV,CRM",
+        connected_tools="Gmail,CSV,CRM,LLM",
     )
     log_agent_event(
         db,
         agent_id="sales-agent",
         task_name="draft_generated",
         event_type="task",
-        status="completed",
+        status="completed" if not llm.get("fallback") else "fallback",
         hours_saved=0.5,
+        lead_id=lead.id,
+        tool_input=f"call_llm(model={os.getenv('OPENAI_MODEL', 'gpt-4o-mini')})",
+        tool_output_preview=(body[:300] if body else "(empty)"),
+        latency_ms=llm.get("latency_ms"),
+        tokens_in=llm.get("tokens_in"),
+        tokens_out=llm.get("tokens_out"),
     )
 
     log_activity(
@@ -1390,61 +1472,6 @@ def approve_draft(draft_id: str, db: Session = Depends(get_db)):
     )
     return draft
 
-@app.get("/agents", response_model=List[AgentOut])
-def get_agents(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    ...
-
-
-@app.get("/agent_stats", response_model=List[AgentStatsOut])
-def get_agent_stats(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    ...
-
-
-@app.get("/governance_events", response_model=List[GovernanceEventOut])
-def get_governance_events(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    ...
-
-
-@app.get("/roi_summary", response_model=RoiSummaryOut)
-def get_roi_summary(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    ...
-
-@app.post("/ops/seed_tasks", response_model=List[OpsTaskOut])
-def seed_ops_tasks(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    ...
-
-
-@app.get("/ops/tasks", response_model=List[OpsTaskOut])
-def list_ops_tasks(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    ...
-
-
-@app.post("/ops/complete_task/{task_id}", response_model=OpsTaskOut)
-def complete_ops_task(
-    task_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    ...
-
 @app.post("/auth/register", response_model=UserOut)
 def register(user_in: UserCreate, db: Session = Depends(get_db)):
     if not ALLOW_REGISTRATION:
@@ -1464,39 +1491,6 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
     db.refresh(user)
     return user
 
-@app.post("/import_real_leads", response_model=List[LeadOut])
-def import_real_leads(
-    payload: ImportPayload,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    ...
-
-
-@app.post("/qualify_leads", response_model=List[LeadOut])
-def qualify_leads(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    ...
-
-
-@app.post("/research_lead/{lead_id}", response_model=LeadOut)
-def research_lead(
-    lead_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    ...
-
-
-@app.post("/generate_researched_draft/{lead_id}", response_model=DraftOut)
-def generate_researched_draft(
-    lead_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    ...
 
 @app.post("/auth/login", response_model=Token)
 def login(user_in: UserCreate, db: Session = Depends(get_db)):
@@ -1507,30 +1501,6 @@ def login(user_in: UserCreate, db: Session = Depends(get_db)):
     access_token = create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer"}
 
-
-@app.post("/support/seed_tickets", response_model=List[TicketOut])
-def seed_tickets(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    ...
-
-
-@app.get("/support/tickets", response_model=List[TicketOut])
-def list_tickets(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    ...
-
-
-@app.post("/support/resolve_ticket/{ticket_id}", response_model=TicketOut)
-def resolve_ticket(
-    ticket_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    ...
 
 @app.post("/send_draft/{draft_id}", response_model=DraftOut)
 def send_draft(draft_id: str, db: Session = Depends(get_db)):
